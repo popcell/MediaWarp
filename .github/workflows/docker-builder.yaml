@@ -1,6 +1,17 @@
 name: MediaWarp Docker Builder
 
 on:
+  workflow_dispatch:
+    inputs:
+      APP_VERSION:
+        description: "用于Docker镜像版本的标签号"
+        required: true
+        type: string
+      IS_LATEST:
+        description: "是否发布为Docker镜像最新版本"
+        required: true
+        default: false
+        type: boolean
   workflow_call:
     inputs:
       APP_VERSION:
@@ -61,7 +72,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./Dockerfile
+          file: ./docker/Dockerfile
           platforms: |
             linux/amd64
             linux/arm/v7
