@@ -55,6 +55,10 @@ func NewEmbyServerHandler(addr string, apiKey string) (*EmbyHandler, error) {
 				Handler: handler.VideosHandler,
 			},
 			{
+				Regexp:  constants.EmbyRegexp.Router.DownloadHandler,
+				Handler: handler.DownloadHandler,
+			},
+			{
 				Regexp: constants.EmbyRegexp.Router.ModifyPlaybackInfo,
 				Handler: responseModifyCreater(
 					&httputil.ReverseProxy{Director: handler.proxy.Director},
@@ -265,6 +269,117 @@ func (handler *EmbyHandler) VideosHandler(ctx *gin.Context) {
 			}
 		}
 	}
+}
+
+// 下载处理器
+//
+// 支持 HTTPStrm 下载 302 重定向
+func (handler *EmbyHandler) DownloadHandler(ctx *gin.Context) {
+	if ctx.Request.Method == http.MethodHead { // 不额外处理 HEAD 请求
+		handler.ReverseProxy(ctx.Writer, ctx.Request)
+		logging.Debug("DownloadHandler 不处理 HEAD 请求，转发至上游服务器")
+		return
+	}
+
+	originalPath := ctx.Request.URL.Path
+	pathSegments := strings.Split(strings.Trim(originalPath, "/"), "/")
+	if len(pathSegments) < 3 || !strings.EqualFold(pathSegments[len(pathSegments)-1], "Download") {
+		logging.Warningf("DownloadHandler 解析 itemId 失败，路径: %s", originalPath)
+		handler.ReverseProxy(ctx.Writer, ctx.Request)
+		return
+	}
+
+	itemID := pathSegments[len(pathSegments)-2]
+	if itemID == "" {
+		logging.Warningf("DownloadHandler itemId 为空，路径: %s", originalPath)
+		handler.ReverseProxy(ctx.Writer, ctx.Request)
+		return
+	}
+
+	logging.Debugf("DownloadHandler 请求 ItemsServiceQueryItem：%s", itemID)
+	itemResponse, err := handler.client.ItemsServiceQueryItem(itemID, 1, "Path,MediaSources")
+	if err != nil {
+		logging.Warningf("DownloadHandler 请求 ItemsServiceQueryItem 失败：%+v", err)
+		handler.ReverseProxy(ctx.Writer, ctx.Request)
+		return
+	}
+
+	if len(itemResponse.Items) == 0 {
+		logging.Warningf("DownloadHandler 查询结果为空，itemId: %s", itemID)
+		handler.ReverseProxy(ctx.Writer, ctx.Request)
+		return
+	}
+
+	item := itemResponse.Items[0]
+	if item.Path == nil || *item.Path == "" {
+		logging.Warningf("DownloadHandler item.Path 为空，itemId: %s", itemID)
+		handler.ReverseProxy(ctx.Writer, ctx.Request)
+		return
+	}
+
+	if !strings.HasSuffix(strings.ToLower(*item.Path), ".strm") { // 不是 Strm 文件
+		logging.Debugf("DownloadHandler 非 Strm 文件：%s", *item.Path)
+		handler.ReverseProxy(ctx.Writer, ctx.Request)
+		return
+	}
+
+	strmFileType, _ := recgonizeStrmFileType(*item.Path)
+	if strmFileType != constants.HTTPStrm { // 仅处理 HTTPStrm
+		logging.Debugf("DownloadHandler Strm 类型不是 HTTPStrm：%s，类型：%s", *item.Path, strmFileType)
+		handler.ReverseProxy(ctx.Writer, ctx.Request)
+		return
+	}
+
+	if len(item.MediaSources) == 0 {
+		logging.Warningf("DownloadHandler MediaSources 为空，itemId: %s", itemID)
+		handler.ReverseProxy(ctx.Writer, ctx.Request)
+		return
+	}
+
+	// EmbyServer <= 4.8 ====> mediaSourceID = 343121
+	// EmbyServer >= 4.9 ====> mediaSourceID = mediasource_31
+	mediaSourceID := ctx.Query("mediasourceid")
+	mediaSourceIDWithoutPrefix := strings.Replace(mediaSourceID, "mediasource_", "", 1)
+	matchedMediaSourceID := mediaSourceID == ""
+
+	for _, mediasource := range item.MediaSources {
+		mediaSourceIDForLog := "<nil>"
+		if mediasource.ID != nil {
+			mediaSourceIDForLog = *mediasource.ID
+		}
+
+		if mediaSourceID != "" {
+			if mediasource.ID == nil {
+				continue
+			}
+			if strings.Replace(*mediasource.ID, "mediasource_", "", 1) != mediaSourceIDWithoutPrefix {
+				continue
+			}
+			matchedMediaSourceID = true
+		}
+
+		if mediasource.Protocol == nil || *mediasource.Protocol != emby.HTTP {
+			logging.Debugf("DownloadHandler 跳过 MediaSource %s，Protocol 非 Http", mediaSourceIDForLog)
+			continue
+		}
+
+		if mediasource.Path == nil || *mediasource.Path == "" {
+			logging.Warningf("DownloadHandler 跳过 MediaSource %s，Path 为空", mediaSourceIDForLog)
+			continue
+		}
+
+		target := handler.httpStrmHandler(*mediasource.Path, ctx.Request.UserAgent())
+		logging.Infof("DownloadHandler 重定向 itemId=%s, mediaSourceID=%s, url=%s", itemID, mediaSourceIDForLog, target)
+		ctx.Redirect(http.StatusFound, target)
+		return
+	}
+
+	if mediaSourceID != "" && !matchedMediaSourceID {
+		logging.Warningf("DownloadHandler 未找到指定的 MediaSource，itemId: %s, mediaSourceID: %s", itemID, mediaSourceID)
+	} else {
+		logging.Warningf("DownloadHandler 未找到可用于重定向的 HTTP MediaSource，itemId: %s", itemID)
+	}
+	handler.ReverseProxy(ctx.Writer, ctx.Request)
 }
 
 // 修改字幕

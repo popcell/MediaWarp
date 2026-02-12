@@ -15,6 +15,7 @@ type EmbyRegexps struct {
 
 type RouterRegexps struct {
 	VideosHandler        *regexp.Regexp // 普通视频处理接口匹配
+	DownloadHandler      *regexp.Regexp // 下载接口匹配
 	ModifyBaseHtmlPlayer *regexp.Regexp // 修改 Web 的 basehtmlplayer.js
 	ModifyIndex          *regexp.Regexp // Web 首页
 	ModifyPlaybackInfo   *regexp.Regexp // 播放信息处理接口
@@ -28,6 +29,7 @@ type OthersRegexps struct {
 var EmbyRegexp = &EmbyRegexps{
 	Router: RouterRegexps{
 		VideosHandler:        regexp.MustCompile(`(?i)^(/emby)?/Videos/\d+/(stream|original)(\.\w+)?$`),
+		DownloadHandler:      regexp.MustCompile(`(?i)^(/emby)?/Items/\d+/Download$`),
 		ModifyBaseHtmlPlayer: regexp.MustCompile(`(?i)^/web/modules/htmlvideoplayer/basehtmlplayer.js$`),
 		ModifyIndex:          regexp.MustCompile(`^/web/index.html$`),
 		ModifyPlaybackInfo:   regexp.MustCompile(`(?i)^(/emby)?/Items/\d+/PlaybackInfo$`),
